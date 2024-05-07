@@ -10,7 +10,7 @@ def load_train_sentences(folder):
 def train_models(epochs=10, batch_size=128, model_name="bert-base-uncased"):
     folders = os.listdir("data-train")
     denoising_functions = ["delete", "noun_swap", "synonym_replacement"]
-    model_types = ["custom", "default"]
+    model_types = ["default"]
     for folder in folders:
         #check if folder is a directory
         if os.path.isdir(f"data-train/{folder}"):
@@ -25,6 +25,7 @@ def train_models(epochs=10, batch_size=128, model_name="bert-base-uncased"):
                         model = DenoisingAutoEncoderModel(model_name, load_model=False)
                     model.train(sentences, denoising_function, epochs=epochs, batch_size=batch_size, output_path=f"models/{folder}/{model_type}/{denoising_function}")
                     model.save_model(f"models/{folder}/{model_type}/{denoising_function}")
+                    del model
                     print(f"Training completed for {denoising_function} on {folder}")
             print(f"Training completed for {folder}")
     print("Training completed for all folders")

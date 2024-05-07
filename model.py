@@ -72,7 +72,8 @@ class DenoisingAutoEncoderModel():
     def create_model(self, transformer_model, pooling_model=None):
         word_embedding_model = models.Transformer(transformer_model)
         if pooling_model is None:
-            pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension(), pooling_mode_cls_token=False, pooling_mode_max_tokens=True)
+            pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension(), "cls")
+
         elif pooling_model == "custom":
             pooling_model = CNNPoolingModule(in_channels=word_embedding_model.get_word_embedding_dimension(), layers_info=self.layers_info, output_dim=768)
 
@@ -111,6 +112,7 @@ class DenoisingAutoEncoderModel():
             output_path=output_path,
             show_progress_bar=True,
         )
+        del train_dataloader, train_loss
 
     
 
