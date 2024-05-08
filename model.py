@@ -6,15 +6,35 @@ from DenoisingAutoEncoderDataset import DenoisingAutoEncoderDataset
 from sentence_transformers import losses
 from torch.utils.data import DataLoader
 import nltk
+
 nltk.download("punkt")
 
+
+class DynamicKMaxPooling(nn.Module):
+    def __init__(self, top_k, L):
+        super(DynamicKMaxPooling, self).__init__()
+        self.top_k = top_k
+        self.L = L
+
+    def forward(self, x, layer_idx):
+        # Calculate dynamic k based on layer index and total layers
+        k = max(self.top_k, int((self.L - layer_idx) / self.L * x.size(2)))
+        x = x.topk(k, dim=2)[0]
+        return x
+
+
 class CNNPoolingModule(nn.Module):
-    def __init__(self, in_channels, layers_info, output_dim):
+    def __init__(self, in_channels, layers_info, output_dim, is_dynamic):
         super(CNNPoolingModule, self).__init__()
         self.conv_blocks = nn.ModuleList()
+        self.is_dynamic = is_dynamic
+        self.L = len(layers_info)
         current_channels = in_channels
 
-        for layer_depth, (num_filters, kernel_size, use_pooling) in enumerate(layers_info):
+        # Initializing to keep track of the last output dimensions
+        self.final_dimensions = (current_channels, None)  # (Number of channels, dynamic length)
+
+        for layer_depth, (num_filters, kernel_size, use_pooling, top_k) in enumerate(layers_info):
             conv_block = nn.Sequential(
                 nn.Conv1d(in_channels=current_channels,
                           out_channels=num_filters,
@@ -24,8 +44,16 @@ class CNNPoolingModule(nn.Module):
                 nn.ReLU()
             )
             if use_pooling:
-                # Apply pooling at certain layers according to the design (True/False flag)
-                conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
+                if self.is_dynamic:
+                    # Apply dynamic k-max pooling
+                    pooling_layer = DynamicKMaxPooling(top_k, self.L)
+                    conv_block.add_module('dynamic_pooling', pooling_layer)
+                    self.final_dimensions = (num_filters, top_k)
+                else:
+                    # Apply static pooling
+                    conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
+                    self.final_dimensions = (num_filters, 1)
+
             self.conv_blocks.append(conv_block)
             current_channels = num_filters  # Update the channel number for the next layer
 
@@ -35,14 +63,22 @@ class CNNPoolingModule(nn.Module):
         else:
             self.final_pooling = nn.Identity()
 
-        self.output_layer = nn.Linear(current_channels, output_dim)
+        # The output layer's input features need to match the final output dimensions of the last conv/pool block
+        self.output_layer = nn.Linear(current_channels * self.final_dimensions[1], output_dim)
+
+        # self.output_layer = nn.Linear(current_channels, output_dim)
 
     def forward(self, features):
         x = features["token_embeddings"]
         x = x.permute(0, 2, 1)  # Prepare for Conv1d
-        for block in self.conv_blocks:
-            x = block(x)
+        for idx, block in enumerate(self.conv_blocks):
+            if self.is_dynamic:
+                x = block[:-1](x)  # Apply all layers except the last dynamic pooling
+                x = block[-1](x, idx)  # Apply dynamic pooling with layer index
+            else:
+                x = block(x)
         x = self.final_pooling(x).squeeze(2)  # Remove the last dimension after pooling
+        x = x.view(x.size(0), -1)
         output = self.output_layer(x)
         features.update({"sentence_embedding": output})
         return features
@@ -54,40 +90,63 @@ class CNNPoolingModule(nn.Module):
     def load(self, input_path):
         self.load_state_dict(torch.load(input_path))
 
-class DenoisingAutoEncoderModel():
-    def __init__(self, transformer_model, pooling_model=None, load_model=False):
+
+def calculate_dynamic_k(layer_idx, L, max_seq_length, k_end=3):
+    k_start = max(int(max_seq_length / 3), k_end + L)  # Ensure k_start is reasonable
+    min_decrement = (k_start - k_end) / (L - 1) if L > 1 else 0  # Avoid division by zero
+
+    k = max(k_end, int(k_start - min_decrement * layer_idx))
+    return k
+
+
+class DenoisingAutoEncoderModel:
+    def __init__(self, transformer_model, pooling_model=None, load_model=False, max_seq_length=50):
         self.transformer_model = transformer_model
+        # calculate dynamic top_k values -> higher in first layers, gets lower towards last layers
         self.layers_info = [
-                                (128, 3, False),  # 128 filters, kernel size 3, no pooling
-                                (128, 5, False),  # 128 filters, kernel size 5, no pooling
-                                (256, 3, False),  # 256 filters, kernel size 3, no pooling
-                                (256, 5, True)  # 256 filters, kernel size 5, pooling here
-                            ]
+            (128, 3, True, calculate_dynamic_k(0, 4, max_seq_length)),  # 128 filters, kernel size 3, pooling, top_k
+            (128, 5, True, calculate_dynamic_k(1, 4, max_seq_length)),  # 128 filters, kernel size 5, pooling, top_k
+            (256, 3, True, calculate_dynamic_k(2, 4, max_seq_length)),  # 256 filters, kernel size 3, pooling, top_k
+            (256, 5, True, calculate_dynamic_k(3, 4, max_seq_length))  # 256 filters, kernel size 5, pooling, top_k
+        ]
         if load_model:
             self.model = self.load_model(self.transformer_model, pooling_model)
         else:
             self.model = self.create_model(self.transformer_model, pooling_model)
-        
-    
+
     def create_model(self, transformer_model, pooling_model=None):
         word_embedding_model = models.Transformer(transformer_model)
         if pooling_model is None:
             pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension(), "cls")
 
         elif pooling_model == "custom":
-            pooling_model = CNNPoolingModule(in_channels=word_embedding_model.get_word_embedding_dimension(), layers_info=self.layers_info, output_dim=768)
+            pooling_model = CNNPoolingModule(in_channels=word_embedding_model.get_word_embedding_dimension(),
+                                             layers_info=self.layers_info, output_dim=768, is_dynamic=False)
+
+        elif pooling_model == "dynamic":
+            pooling_model = CNNPoolingModule(in_channels=word_embedding_model.get_word_embedding_dimension(),
+                                             layers_info=self.layers_info, output_dim=768, is_dynamic=True)
 
         return SentenceTransformer(modules=[word_embedding_model, pooling_model])
-    
+
     def load_model(self, transformer_model, pooling_model):
         if pooling_model is None:
             return SentenceTransformer(transformer_model)
+
         elif pooling_model == "custom":
             model = models.Transformer(transformer_model)
-            cnn_module = CNNPoolingModule(in_channels=model.get_word_embedding_dimension(), layers_info=self.layers_info, output_dim=768)
+            cnn_module = CNNPoolingModule(in_channels=model.get_word_embedding_dimension(),
+                                          layers_info=self.layers_info, output_dim=768, is_dynamic=False)
             cnn_module.load_state_dict(torch.load(f'{transformer_model}/1_CNNPoolingModule/model.pth'))
             return SentenceTransformer(modules=[model, cnn_module])
-    
+
+        elif pooling_model == "dynamic":
+            model = models.Transformer(transformer_model)
+            cnn_module = CNNPoolingModule(in_channels=model.get_word_embedding_dimension(),
+                                          layers_info=self.layers_info, output_dim=768, is_dynamic=True)
+            cnn_module.load_state_dict(torch.load(f'{transformer_model}/1_CNNPoolingModule/model.pth'))
+            return SentenceTransformer(modules=[model, cnn_module])
+
     def save_model(self, output_path):
         self.model.save(output_path)
 
@@ -102,7 +161,8 @@ class DenoisingAutoEncoderModel():
             raise ValueError("Invalid denoising function")
 
         train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        train_loss = losses.DenoisingAutoEncoderLoss(self.model, decoder_name_or_path=self.transformer_model, tie_encoder_decoder=True)
+        train_loss = losses.DenoisingAutoEncoderLoss(self.model, decoder_name_or_path=self.transformer_model,
+                                                     tie_encoder_decoder=False)
 
         self.model.fit(
             train_objectives=[(train_dataloader, train_loss)],
@@ -114,6 +174,5 @@ class DenoisingAutoEncoderModel():
         )
         del train_dataloader, train_loss
 
-    
-
-        
+    def print_my_model(self):
+        print(self.model)
