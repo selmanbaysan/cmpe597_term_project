@@ -34,7 +34,19 @@ class CNNPoolingModule(nn.Module):
         self.final_dimensions = in_channels
 
         for layer_depth, (num_filters, kernel_size, use_pooling, top_k) in enumerate(layers_info):
-            if not layer_depth == len(layers_info) - 1:
+            if self.is_dynamic and layer_depth == len(layers_info) - 1:
+                conv_block = nn.Sequential(
+                    nn.Conv1d(in_channels=current_channels,
+                              out_channels=768,
+                              kernel_size=kernel_size,
+                              padding=kernel_size // 2),  # padding to maintain dimensionality
+                    nn.BatchNorm1d(768),
+                    nn.ReLU()
+                )
+                conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
+                self.final_dimensions = num_filters  # Only the number of filters matters if length is 1
+
+            else:
                 conv_block = nn.Sequential(
                     nn.Conv1d(in_channels=current_channels,
                               out_channels=num_filters,
@@ -53,18 +65,6 @@ class CNNPoolingModule(nn.Module):
                         # Apply static pooling
                         conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
                         self.final_dimensions = num_filters  # Only the number of filters matters if length is 1
-
-            else:
-                conv_block = nn.Sequential(
-                    nn.Conv1d(in_channels=current_channels,
-                              out_channels=768,
-                              kernel_size=kernel_size,
-                              padding=kernel_size // 2),  # padding to maintain dimensionality
-                    nn.BatchNorm1d(768),
-                    nn.ReLU()
-                )
-                conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
-                self.final_dimensions = num_filters  # Only the number of filters matters if length is 1
 
             self.conv_blocks.append(conv_block)
             current_channels = num_filters  # Update the channel number for the next layer
