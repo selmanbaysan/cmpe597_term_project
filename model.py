@@ -105,8 +105,9 @@ def calculate_dynamic_k(layer_idx, L, max_seq_length, k_end=3):
     return k
 
 
+# model_path = "models/dataset_name/model_type/denoising"
 class DenoisingAutoEncoderModel:
-    def __init__(self, transformer_model, pooling_model=None, load_model=False, max_seq_length=50):
+    def __init__(self, transformer_model, pooling_model=None, load_model=False, max_seq_length=50, model_path=""):
         self.transformer_model = transformer_model
         # calculate dynamic top_k values -> higher in first layers, gets lower towards last layers
         self.layers_info = [
@@ -116,7 +117,7 @@ class DenoisingAutoEncoderModel:
             (256, 5, True, calculate_dynamic_k(3, 4, max_seq_length))  # 256 filters, kernel size 5, pooling, top_k
         ]
         if load_model:
-            self.model = self.load_model(self.transformer_model, pooling_model)
+            self.model = self.load_model(self.transformer_model, pooling_model, model_path)
         else:
             self.model = self.create_model(self.transformer_model, pooling_model)
 
@@ -135,22 +136,22 @@ class DenoisingAutoEncoderModel:
 
         return SentenceTransformer(modules=[word_embedding_model, pooling_model])
 
-    def load_model(self, transformer_model, pooling_model):
+    def load_model(self, transformer_model, pooling_model, model_path):
         if pooling_model is None:
             return SentenceTransformer(transformer_model)
 
         elif pooling_model == "custom":
-            model = models.Transformer(transformer_model)
+            model = models.Transformer(model_path)
             cnn_module = CNNPoolingModule(in_channels=model.get_word_embedding_dimension(),
                                           layers_info=self.layers_info, output_dim=768, is_dynamic=False)
-            cnn_module.load_state_dict(torch.load(f'{transformer_model}/1_CNNPoolingModule/model.pth'))
+            cnn_module.load_state_dict(torch.load(f'{model_path}/1_CNNPoolingModule/model.pth'))
             return SentenceTransformer(modules=[model, cnn_module])
 
         elif pooling_model == "dynamic":
-            model = models.Transformer(transformer_model)
+            model = models.Transformer(model_path)
             cnn_module = CNNPoolingModule(in_channels=model.get_word_embedding_dimension(),
                                           layers_info=self.layers_info, output_dim=768, is_dynamic=True)
-            cnn_module.load_state_dict(torch.load(f'{transformer_model}/1_CNNPoolingModule/model.pth'))
+            cnn_module.load_state_dict(torch.load(f'{model_path}/1_CNNPoolingModule/model.pth'))
             return SentenceTransformer(modules=[model, cnn_module])
 
     def save_model(self, output_path):
