@@ -34,38 +34,51 @@ class CNNPoolingModule(nn.Module):
         self.final_dimensions = in_channels
 
         for layer_depth, (num_filters, kernel_size, use_pooling, top_k) in enumerate(layers_info):
-            conv_block = nn.Sequential(
-                nn.Conv1d(in_channels=current_channels,
-                          out_channels=num_filters,
-                          kernel_size=kernel_size,
-                          padding=kernel_size // 2),  # padding to maintain dimensionality
-                nn.BatchNorm1d(num_filters),
-                nn.ReLU()
-            )
-            if use_pooling:
-                if self.is_dynamic:
-                    # Apply dynamic k-max pooling
-                    pooling_layer = DynamicKMaxPooling(top_k, self.L)
-                    conv_block.add_module('dynamic_pooling', pooling_layer)
-                    self.final_dimensions = num_filters * top_k  # Adjust for dynamic k
-                else:
-                    # Apply static pooling
-                    conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
-                    self.final_dimensions = num_filters  # Only the number of filters matters if length is 1
+            if not layer_depth == len(layers_info) - 1:
+                conv_block = nn.Sequential(
+                    nn.Conv1d(in_channels=current_channels,
+                              out_channels=num_filters,
+                              kernel_size=kernel_size,
+                              padding=kernel_size // 2),  # padding to maintain dimensionality
+                    nn.BatchNorm1d(num_filters),
+                    nn.ReLU()
+                )
+                if use_pooling:
+                    if self.is_dynamic:
+                        # Apply dynamic k-max pooling
+                        pooling_layer = DynamicKMaxPooling(top_k, self.L)
+                        conv_block.add_module('dynamic_pooling', pooling_layer)
+                        self.final_dimensions = num_filters * top_k  # Adjust for dynamic k
+                    else:
+                        # Apply static pooling
+                        conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
+                        self.final_dimensions = num_filters  # Only the number of filters matters if length is 1
+
+            else:
+                conv_block = nn.Sequential(
+                    nn.Conv1d(in_channels=current_channels,
+                              out_channels=768,
+                              kernel_size=kernel_size,
+                              padding=kernel_size // 2),  # padding to maintain dimensionality
+                    nn.BatchNorm1d(768),
+                    nn.ReLU()
+                )
+                conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
+                self.final_dimensions = num_filters  # Only the number of filters matters if length is 1
 
             self.conv_blocks.append(conv_block)
             current_channels = num_filters  # Update the channel number for the next layer
 
         # The final layer's output is pooled to produce a single vector if the last layer isn't pooled
         self.final_pooling = nn.Identity() if layers_info[-1][2] else nn.AdaptiveMaxPool1d(1)
-        self.final_dimensions = current_channels * top_k if self.is_dynamic else current_channels
+        self.final_dimensions = 768 if self.is_dynamic else current_channels
         self.output_layer = nn.Linear(self.final_dimensions, output_dim)
 
     def forward(self, features):
         x = features["token_embeddings"]
         x = x.permute(0, 2, 1)  # Prepare for Conv1d
         for idx, block in enumerate(self.conv_blocks):
-            if self.is_dynamic:
+            if self.is_dynamic and idx != len(self.conv_blocks)-1:
                 x = block[:-1](x)  # Apply all layers except the last dynamic pooling
                 x = block[-1](x, idx)  # Apply dynamic pooling with layer index
             else:
