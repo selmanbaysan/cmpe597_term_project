@@ -11,9 +11,9 @@ def load_train_sentences(folder):
 
 
 def train_models(epochs=10, batch_size=128, model_name="bert-base-uncased"):
-    folders = os.listdir("data-train")
+    folders = ["askubuntu", "cqadupstack"]
     denoising_functions = ["delete", "noun_swap", "synonym_replacement"]
-    model_types = ["defult"]
+    model_types = ["dynamic"]
     for folder in folders:
         # check if folder is a directory
         if os.path.isdir(f"data-train/{folder}"):
@@ -59,4 +59,4 @@ def train_models(epochs=10, batch_size=128, model_name="bert-base-uncased"):
 
 
 if __name__ == "__main__":
-    train_models(epochs=5, batch_size=128, model_name="bert-base-uncased")
+    train_models(epochs=5, batch_size=2, model_name="bert-base-uncased")

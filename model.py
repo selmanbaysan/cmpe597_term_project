@@ -17,10 +17,11 @@ class DynamicKMaxPooling(nn.Module):
         self.L = L
 
     def forward(self, x, layer_idx):
-        # Calculate dynamic k based on layer index and total layers
-        k = max(self.top_k, int((self.L - layer_idx) / self.L * x.size(2)))
-        x = x.topk(k, dim=2)[0]
-        return x
+        max_k = x.size(2)  # Get the current size of the dimension to apply topk
+        k = max(self.top_k, int((self.L - layer_idx) / self.L * max_k))
+        k = min(k, max_k)  # Ensure k is not larger than the actual dimension size
+        print(f"Layer Index: {layer_idx}, Calculated k: {k}, Max k: {max_k}, Current x.size(): {x.size()}")
+        return x.topk(k, dim=2)[0]
 
 
 class CNNPoolingModule(nn.Module):
@@ -30,9 +31,9 @@ class CNNPoolingModule(nn.Module):
         self.is_dynamic = is_dynamic
         self.L = len(layers_info)
         current_channels = in_channels
+        final_k = None
 
-        # Initializing to keep track of the last output dimensions
-        self.final_dimensions = (current_channels, None)  # (Number of channels, dynamic length)
+        self.final_dimensions = in_channels
 
         for layer_depth, (num_filters, kernel_size, use_pooling, top_k) in enumerate(layers_info):
             conv_block = nn.Sequential(
@@ -48,11 +49,11 @@ class CNNPoolingModule(nn.Module):
                     # Apply dynamic k-max pooling
                     pooling_layer = DynamicKMaxPooling(top_k, self.L)
                     conv_block.add_module('dynamic_pooling', pooling_layer)
-                    self.final_dimensions = (num_filters, top_k)
+                    self.final_dimensions = num_filters * top_k  # Adjust for dynamic k
                 else:
                     # Apply static pooling
                     conv_block.add_module('pooling', nn.AdaptiveMaxPool1d(1))
-                    self.final_dimensions = (num_filters, 1)
+                    self.final_dimensions = num_filters  # Only the number of filters matters if length is 1
 
             self.conv_blocks.append(conv_block)
             current_channels = num_filters  # Update the channel number for the next layer
@@ -64,7 +65,7 @@ class CNNPoolingModule(nn.Module):
             self.final_pooling = nn.Identity()
 
         # The output layer's input features need to match the final output dimensions of the last conv/pool block
-        self.output_layer = nn.Linear(current_channels * self.final_dimensions[1], output_dim)
+        self.output_layer = nn.Linear(self.final_dimensions, output_dim)
 
         # self.output_layer = nn.Linear(current_channels, output_dim)
 
