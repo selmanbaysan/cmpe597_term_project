@@ -86,8 +86,6 @@ class DenoisingAutoEncoderDataset(Dataset):
             if swap_candidates:
                 j = np.random.choice(swap_candidates)
                 words_processed[i], words_processed[j] = words_processed[j], words_processed[i]
-                noun_idx.remove(i)
-                noun_idx.remove(j)
 
         words_processed = TreebankWordDetokenizer().detokenize(words_processed)
         return words_processed
