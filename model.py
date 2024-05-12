@@ -31,8 +31,6 @@ class CNNPoolingModule(nn.Module):
         self.is_dynamic = is_dynamic
         self.L = len(layers_info)
         current_channels = in_channels
-        final_k = None
-
         self.final_dimensions = in_channels
 
         for layer_depth, (num_filters, kernel_size, use_pooling, top_k) in enumerate(layers_info):
@@ -59,15 +57,9 @@ class CNNPoolingModule(nn.Module):
             current_channels = num_filters  # Update the channel number for the next layer
 
         # The final layer's output is pooled to produce a single vector if the last layer isn't pooled
-        if not layers_info[-1][2]:
-            self.final_pooling = nn.AdaptiveMaxPool1d(1)
-        else:
-            self.final_pooling = nn.Identity()
-
-        # The output layer's input features need to match the final output dimensions of the last conv/pool block
+        self.final_pooling = nn.Identity() if layers_info[-1][2] else nn.AdaptiveMaxPool1d(1)
+        self.final_dimensions = current_channels * top_k if self.is_dynamic else current_channels
         self.output_layer = nn.Linear(self.final_dimensions, output_dim)
-
-        # self.output_layer = nn.Linear(current_channels, output_dim)
 
     def forward(self, features):
         x = features["token_embeddings"]
